@@ -41,6 +41,9 @@
 #include <map>
 #include <string>
 #include <vector>
+#ifdef DEF_PICOJSON_V8_CONVERTER
+#include <v8.h>
+#endif	// DEF_PICOJSON_V8_CONVERTER
 
 #ifdef _MSC_VER
     #define SNPRINTF _snprintf_s
@@ -87,6 +90,9 @@ namespace picojson {
     explicit value(const object& o);
     explicit value(const char* s);
     value(const char* s, size_t len);
+#ifdef DEF_PICOJSON_V8_CONVERTER
+    value(v8::Handle<v8::Value> v8val);
+#endif	// DEF_PICOJSON_V8_CONVERTER
     ~value();
     value(const value& x);
     value& operator=(const value& x);
@@ -102,6 +108,9 @@ namespace picojson {
     std::string to_str() const;
     template <typename Iter> void serialize(Iter os) const;
     std::string serialize() const;
+#ifdef DEF_PICOJSON_V8_CONVERTER
+    v8::Handle<v8::Value> to_v8() const;
+#endif	// DEF_PICOJSON_V8_CONVERTER
   private:
     template <typename T> value(const T*); // intentionally defined to block implicit conversion of pointer to bool
   };
@@ -152,6 +161,41 @@ namespace picojson {
     u_.string_ = new std::string(s, len);
   }
   
+#ifdef DEF_PICOJSON_V8_CONVERTER
+  value::value(v8::Handle<v8::Value> v8val) {
+    if (v8val->IsBoolean()) {
+      type_ = boolean_type;
+      u_.boolean_ = v8val->BooleanValue();
+    } else if (v8val->IsNumber()) {
+      type_ = number_type;
+      u_.number_ = v8val->NumberValue();
+    } else if (v8val->IsString()) {
+      type_ = string_type;
+      u_.string_ = new std::string(*v8::String::Utf8Value(v8val));
+    } else if (v8val->IsArray()) {
+      type_ = array_type;
+      u_.array_ = new array;
+
+      v8::Handle<v8::Array> ary = v8::Handle<v8::Array>::Cast(v8val);
+      for (uint32_t i = 0; i < ary->Length(); i++) {
+	u_.array_->push_back(value(ary->Get(i)));
+      }
+    } else if (v8val->IsObject()) {
+      type_ = object_type;
+      u_.object_ = new object;
+
+      v8::Handle<v8::Object> obj = v8::Handle<v8::Object>::Cast(v8val);
+      v8::Handle<v8::Array> prop_ary = obj->GetPropertyNames();
+      for (uint32_t i = 0; i < prop_ary->Length(); i++) {
+	(*u_.object_)[*v8::String::Utf8Value(prop_ary->Get(i))] =
+	  value(obj->Get(prop_ary->Get(i)));
+      }
+    } else {
+      type_ = null_type;
+    }
+  }
+#endif	// DEF_PICOJSON_V8_CONVERTER
+
   inline value::~value() {
     switch (type_) {
 #define DEINIT(p) case p##type: delete u_.p; break
@@ -357,6 +401,42 @@ namespace picojson {
     return s;
   }
   
+#ifdef DEF_PICOJSON_V8_CONVERTER
+  v8::Handle<v8::Value> value::to_v8() const {
+    switch (type_) {
+    case boolean_type:
+      return v8::Boolean::New(u_.boolean_);
+    case number_type:
+      return v8::Number::New(u_.number_);
+    case string_type:
+      return v8::String::New(u_.string_->c_str());
+    case array_type: {
+      v8::Local<v8::Array> ary = v8::Array::New();
+      for (array::const_iterator i = u_.array_->begin();
+	   i != u_.array_->end();
+	   ++i) {
+	ary->Set(ary->Length(), i->to_v8());
+      }
+      return ary;
+    }
+    case object_type: {
+      v8::Local<v8::Object> obj = v8::Object::New();
+      for (object::const_iterator i = u_.object_->begin();
+	   i != u_.object_->end();
+	   ++i) {
+	obj->Set(v8::String::New(i->first.c_str()), i->second.to_v8());
+      }
+      return obj;
+    }
+
+    case null_type:
+    default:
+      return v8::Null();
+      break;
+    }
+  }
+#endif	// DEF_PICOJSON_V8_CONVERTER
+
   template <typename Iter> class input {
   protected:
     Iter cur_, end_;
